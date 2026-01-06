@@ -12,56 +12,49 @@ st.set_page_config(
 )
 
 # --------------------------------------------------
-# Case Extraction from Text
+# Extract WP cases from pasted text
 # --------------------------------------------------
 def extract_cases_from_text(raw_text):
     if not raw_text.strip():
         return []
 
-    # Normalize whitespace (important for copied court text)
     text = re.sub(r"\s+", " ", raw_text)
 
-    # Regex that excludes parentheses and trailing junk
-    wp_pattern = r"\bWP/\d{1,6}/\d{2,4}(?=\D|$)"
+    wp_pattern = r"\bWP\s*/\s*\d{1,6}\s*/\s*\d{2,4}(?=\D|$)"
     cases = re.findall(wp_pattern, text, flags=re.IGNORECASE)
 
-    # Normalize + deduplicate
-    cases = sorted(set(c.upper().strip() for c in cases))
+    clean = []
+    for c in cases:
+        c = re.sub(r"\s*/\s*", "/", c)
+        clean.append(c.upper())
 
-    # Debug info
-    st.write("### 📄 Cause List Text Analysis")
-    st.write(f"Total unique WP cases found: **{len(cases)}**")
-    if cases:
-        st.write("Sample cases:", cases[:5])
+    clean = sorted(set(clean))
 
-    return cases
+    st.write("### 📄 Cause List Debug")
+    st.write(f"WP cases found: **{len(clean)}**")
+    if clean:
+        st.write("Sample:", clean[:5])
+
+    return clean
 
 # --------------------------------------------------
 # UI
 # --------------------------------------------------
-st.title("⚖️ APHC Case Matcher (Text Input)")
+st.title("⚖️ APHC Case Matcher")
 st.markdown(
     """
-### Step 1  
-Copy the **cause list text** from APHC website / PDF and paste it below.
-
-### Step 2  
-Upload your **Master Excel file**.
-
-The app will instantly show **matching WP cases**.
+**Step 1:** Copy cause list text and paste below  
+**Step 2:** Upload your Excel (year-wise sheets)
 """
 )
 
-# Text input for cause list
 cause_text = st.text_area(
-    "📝 Paste Cause List Text Here",
-    height=300,
-    placeholder="Paste copied cause list content here..."
+    "📝 Paste Cause List Text",
+    height=300
 )
 
-# Excel upload
 xls_file = st.file_uploader(
-    "📊 Upload Master Excel (.xlsx / .xls)",
+    "📊 Upload Excel File",
     type=["xlsx", "xls"]
 )
 
@@ -71,49 +64,50 @@ xls_file = st.file_uploader(
 if cause_text and xls_file:
     with st.status("Processing...", expanded=True):
 
-        st.write("📄 Extracting cases from pasted text...")
-        cause_list_cases = extract_cases_from_text(cause_text)
-        cause_set = set(cause_list_cases)
+        cause_cases = extract_cases_from_text(cause_text)
+        cause_set = set(cause_cases)
 
         st.write("📊 Reading Excel sheets...")
         xls = pd.ExcelFile(xls_file)
         all_matches = []
 
-        for sheet_name in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=sheet_name)
-            df.columns = [str(c).strip().lower() for c in df.columns]
+        for sheet in xls.sheet_names:
+            df = pd.read_excel(xls, sheet_name=sheet)
 
-            # Auto-detect columns
+            # Normalize column names
+            df.columns = [c.lower().strip() for c in df.columns]
+
+            # 🔥 DETECT YOUR REAL COLUMNS
             case_col = next(
-                (c for c in df.columns if "case" in c and "no" in c),
+                (c for c in df.columns if c in ["case no", "caseno", "case number"]),
                 None
             )
             year_col = next(
-                (c for c in df.columns if "year" in c),
+                (c for c in df.columns if c in ["case year", "year"]),
                 None
             )
 
-            if case_col and year_col:
-                df["Temp_FullCase"] = (
-                    "WP/" +
-                    df[case_col].astype(str).str.strip() +
-                    "/" +
-                    df[year_col].astype(str).str.strip()
-                )
+            if not case_col or not year_col:
+                continue
 
-                # Normalize
-                df["Temp_FullCase"] = (
-                    df["Temp_FullCase"]
-                    .str.upper()
-                    .str.replace(r"\.0$", "", regex=True)
-                )
+            # Build WP/xxx/yyyy
+            df["Temp_FullCase"] = (
+                "WP/" +
+                df[case_col].astype(str).str.strip() +
+                "/" +
+                df[year_col].astype(str).str.strip()
+            ).str.upper()
 
-                mask = df["Temp_FullCase"].isin(cause_set)
-                matches = df.loc[mask].copy()
+            # DEBUG (first valid sheet only)
+            if sheet == xls.sheet_names[0]:
+                st.write("### 📊 Excel Debug")
+                st.write(df["Temp_FullCase"].head(5).tolist())
 
-                if not matches.empty:
-                    matches["Sheet_Source"] = sheet_name
-                    all_matches.append(matches)
+            matches = df[df["Temp_FullCase"].isin(cause_set)].copy()
+
+            if not matches.empty:
+                matches["Sheet_Source"] = sheet
+                all_matches.append(matches)
 
         st.success("Processing completed")
 
@@ -122,22 +116,20 @@ if cause_text and xls_file:
     # --------------------------------------------------
     if all_matches:
         final_df = pd.concat(all_matches, ignore_index=True)
+        final_df.drop(columns=["Temp_FullCase"], inplace=True)
 
-        if "Temp_FullCase" in final_df.columns:
-            final_df.drop(columns=["Temp_FullCase"], inplace=True)
-
-        st.success(f"✅ {len(final_df)} matching rows found")
+        st.success(f"✅ {len(final_df)} matching cases found")
         st.dataframe(final_df, use_container_width=True)
 
         csv = final_df.to_csv(index=False).encode("utf-8")
         st.download_button(
-            "📥 Download Matched Cases (CSV)",
+            "📥 Download Matches (CSV)",
             data=csv,
             file_name="aphc_matched_cases.csv",
             mime="text/csv"
         )
     else:
-        st.warning("❌ No matching cases found. Check Excel case/year columns.")
+        st.warning("❌ No matches found. Please verify pasted cause list.")
 
 else:
     st.info("⬆️ Paste cause list text and upload Excel to continue.")
