@@ -11,8 +11,8 @@ def extract_cases_from_pdf(pdf_file):
     for page in doc:
         text += page.get_text() + "\n"
 
-    wp_pattern = r"WP/\d{1,6}/\d{4}"
-    paren_pattern = r"\(WP/\d{1,6}/\d{4}\)"
+    wp_pattern = r"\bWP/\d{1,5}/\d{4}\b(?!\))"
+    paren_pattern = r"\bWP/\d{1,5}/\d{4}\b(?!\))"
     
     all_wp = re.findall(wp_pattern, text)
     paren_raw = re.findall(paren_pattern, text)
