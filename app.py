@@ -11,21 +11,36 @@ def extract_cases_from_pdf(pdf_file):
     for page in doc:
         text += page.get_text() + "\n"
 
-    wp_pattern = r"\bWP/\d{1,5}/\d{4}\b(?!\))"
-    paren_pattern = r"\bWP/\d{1,5}/\d{4}\b(?!\))"
+    # Multiple patterns for APHC formats
+    wp_pattern = r"(?i)(?:^|[^\w./])WP/\d{1,6}/\d{4}(?=[^\w./]|$)"
+    
+    # Pattern 1: (WP/123/2023)
+    paren1 = r"\(WP/\d{1,6}/\d{4}\)"
+    # Pattern 2: ARISING FROM WP/123/2023
+    paren2 = r"(?:arising|arising from).*?WP/\d{1,6}/\d{4}"
+    # Pattern 3: WP/123/2023 (in next line after ARISING)
+    paren3 = r"(?:arising|arising from)[\s\S]*?WP/\d{1,6}/\d{4}"
     
     all_wp = re.findall(wp_pattern, text)
-    paren_raw = re.findall(paren_pattern, text)
-    paren_clean = [s.strip("()") for s in paren_raw]
+    paren_raw1 = re.findall(paren1, text)
+    paren_raw2 = re.findall(paren2, text, re.IGNORECASE)
+    paren_raw3 = re.findall(paren3, text, re.IGNORECASE)
+    
+    paren_clean = []
+    for s in paren_raw1 + paren_raw2 + paren_raw3:
+        if "WP/" in s:
+            # Extract WP number from string
+            wp_match = re.search(r"WP/\d{1,6}/\d{4}", s)
+            if wp_match:
+                paren_clean.append(wp_match.group())
     
     final_set = set(all_wp) - set(paren_clean)
     
-    # DEBUG INFO - Shows what regex found
+    # DEBUG
     st.write("**DEBUG - PDF Analysis:**")
     st.write(f"All WP found: **{len(all_wp)}**")
-    st.write(f"Arising in (): **{len(paren_clean)}**")
+    st.write(f"Arising cases detected: **{len(paren_clean)}**")
     st.write(f"Final main cases: **{len(final_set)}**")
-    
     if paren_clean:
         st.write("Sample arising cases:", paren_clean[:3])
     
