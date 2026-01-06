@@ -18,24 +18,35 @@ def extract_cases_from_text(raw_text):
     if not raw_text.strip():
         return []
 
+    # Normalize whitespace
     text = re.sub(r"\s+", " ", raw_text)
 
-    wp_pattern = r"\bWP\s*/\s*\d{1,6}\s*/\s*\d{2,4}(?=\D|$)"
-    cases = re.findall(wp_pattern, text, flags=re.IGNORECASE)
+    # Core WP pattern (no brackets)
+    wp_pattern = r"\bWP\s*/\s*\d{1,6}\s*/\s*\d{2,4}"
+    raw_cases = re.findall(wp_pattern, text, flags=re.IGNORECASE)
 
-    clean = []
-    for c in cases:
+    clean_cases = []
+
+    for c in raw_cases:
+        # Normalize slashes
         c = re.sub(r"\s*/\s*", "/", c)
-        clean.append(c.upper())
 
-    clean = sorted(set(clean))
+        # HARD CLEAN – remove ANY brackets/symbols
+        c = c.replace("(", "").replace(")", "")
+        c = c.replace("[", "").replace("]", "")
+        c = c.replace("{", "").replace("}", "")
 
+        clean_cases.append(c.upper().strip())
+
+    clean_cases = sorted(set(clean_cases))
+
+    # DEBUG OUTPUT
     st.write("### 📄 Cause List Debug")
-    st.write(f"WP cases found: **{len(clean)}**")
-    if clean:
-        st.write("Sample:", clean[:5])
+    st.write(f"Total WP cases extracted: **{len(clean_cases)}**")
+    if clean_cases:
+        st.write("Sample cases:", clean_cases[:10])
 
-    return clean
+    return clean_cases
 
 # --------------------------------------------------
 # UI
@@ -44,13 +55,14 @@ st.title("⚖️ APHC Case Matcher")
 st.markdown(
     """
 **Step 1:** Copy cause list text and paste below  
-**Step 2:** Upload your Excel (year-wise sheets)
+**Step 2:** Upload your Excel file  
 """
 )
 
 cause_text = st.text_area(
-    "📝 Paste Cause List Text",
-    height=300
+    "📝 Paste Cause List Text Here",
+    height=300,
+    placeholder="Paste cause list content here..."
 )
 
 xls_file = st.file_uploader(
@@ -77,7 +89,7 @@ if cause_text and xls_file:
             # Normalize column names
             df.columns = [c.lower().strip() for c in df.columns]
 
-            # 🔥 DETECT YOUR REAL COLUMNS
+            # Detect case & year columns (YOUR excel compatible)
             case_col = next(
                 (c for c in df.columns if c in ["case no", "caseno", "case number"]),
                 None
@@ -98,10 +110,10 @@ if cause_text and xls_file:
                 df[year_col].astype(str).str.strip()
             ).str.upper()
 
-            # DEBUG (first valid sheet only)
+            # DEBUG first sheet
             if sheet == xls.sheet_names[0]:
                 st.write("### 📊 Excel Debug")
-                st.write(df["Temp_FullCase"].head(5).tolist())
+                st.write(df["Temp_FullCase"].head(10).tolist())
 
             matches = df[df["Temp_FullCase"].isin(cause_set)].copy()
 
@@ -123,13 +135,13 @@ if cause_text and xls_file:
 
         csv = final_df.to_csv(index=False).encode("utf-8")
         st.download_button(
-            "📥 Download Matches (CSV)",
+            "📥 Download Matched Cases (CSV)",
             data=csv,
             file_name="aphc_matched_cases.csv",
             mime="text/csv"
         )
     else:
-        st.warning("❌ No matches found. Please verify pasted cause list.")
+        st.warning("❌ No matching cases found. Check pasted text.")
 
 else:
     st.info("⬆️ Paste cause list text and upload Excel to continue.")
