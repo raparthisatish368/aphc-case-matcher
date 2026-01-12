@@ -18,12 +18,13 @@ st.markdown("""
 - ✅ Extract **only main WP cases**
 - ❌ Ignore anything inside `( )`
 - ❌ Ignore **ARISING FROM** cases
-- ✅ Case No:
+- ✅ Case No rules:
   - Blank cell → skipped
   - Spaces allowed → spaces removed (`"1 2"` → `12`)
-- ✅ Year:
-  - If **any row** has a year → that year is applied to the whole sheet
-  - If no year anywhere → sheet skipped
+- ✅ Year rules (STRICT ORDER):
+  1. If **any row** has a year → use first valid year
+  2. Else infer year from **sheet name** (e.g. `2022`)
+  3. Else skip the sheet
 """)
 
 # --------------------------------------------------
@@ -33,7 +34,7 @@ def extract_main_wp_cases(raw_text):
     if not raw_text.strip():
         return []
 
-    # Remove all bracketed content
+    # Remove bracketed content completely
     text = re.sub(r"\([^)]*\)", "", raw_text)
 
     # Remove lines containing "ARISING FROM"
@@ -44,7 +45,7 @@ def extract_main_wp_cases(raw_text):
     # Normalize whitespace
     text = re.sub(r"\s+", " ", text)
 
-    # Extract standalone WP cases only
+    # Extract ONLY standalone WP cases
     matches = re.findall(
         r"\bWP\s*/\s*\d{1,6}\s*/\s*\d{2,4}\b",
         text,
@@ -97,7 +98,7 @@ if cause_text and xls_file:
             # Normalize column names
             df.columns = [c.lower().strip() for c in df.columns]
 
-            # Detect columns
+            # Detect required columns
             case_col = next(
                 (c for c in df.columns if c in ["case no", "caseno", "case number"]),
                 None
@@ -112,26 +113,34 @@ if cause_text and xls_file:
 
             # --------------------------------------------------
             # CASE NO LOGIC
-            # - Skip only if completely blank
-            # - Remove all spaces
             # --------------------------------------------------
             df[case_col] = df[case_col].astype(str)
-            df = df[~df[case_col].str.strip().eq("")]
 
+            # Skip rows where case no is completely blank
+            df = df[~df[case_col].str.strip().eq("")]
             if df.empty:
                 continue
 
+            # Remove all spaces inside case number
             df[case_col] = df[case_col].str.replace(r"\s+", "", regex=True)
 
             # --------------------------------------------------
-            # YEAR LOGIC (sheet-level)
+            # YEAR LOGIC (ROBUST)
             # --------------------------------------------------
             year_series = pd.to_numeric(df[year_col], errors="coerce")
 
-            if not year_series.notna().any():
-                continue  # no year anywhere in this sheet
+            if year_series.notna().any():
+                # Priority 1: take first valid year from column
+                detected_year = int(year_series.dropna().iloc[0])
+            else:
+                # Priority 2: infer year from sheet name
+                sheet_year_match = re.search(r"\b(19|20)\d{2}\b", sheet)
+                if sheet_year_match:
+                    detected_year = int(sheet_year_match.group())
+                else:
+                    continue  # no year anywhere → skip sheet safely
 
-            detected_year = int(year_series.dropna().iloc[0])
+            # Fill missing years with detected year
             df[year_col] = year_series.fillna(detected_year).astype(int)
 
             # --------------------------------------------------
@@ -144,7 +153,9 @@ if cause_text and xls_file:
                 df[year_col].astype(str)
             ).str.upper()
 
-            # Match
+            # --------------------------------------------------
+            # Match against cause list
+            # --------------------------------------------------
             matches = df[df["Temp_FullCase"].isin(main_case_set)].copy()
 
             if not matches.empty:
