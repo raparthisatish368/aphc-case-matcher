@@ -35,16 +35,16 @@ st.markdown("""
 """)
 
 # ==================================================
-# 🔒 MATCHING LOGIC (UNCHANGED – YOUR ORIGINAL CODE)
+# 🔒 MATCHING LOGIC (UNCHANGED)
 # ==================================================
 def extract_main_wp_cases(raw_text):
     if not raw_text.strip():
         return []
 
-    # Remove bracketed content completely
+    # Remove bracketed content
     text = re.sub(r"\([^)]*\)", "", raw_text)
 
-    # Remove lines containing "ARISING FROM"
+    # Remove "ARISING FROM" lines
     lines = text.splitlines()
     lines = [l for l in lines if "ARISING FROM" not in l.upper()]
     text = " ".join(lines)
@@ -52,7 +52,7 @@ def extract_main_wp_cases(raw_text):
     # Normalize whitespace
     text = re.sub(r"\s+", " ", text)
 
-    # Extract ONLY standalone WP cases
+    # Extract WP cases
     matches = re.findall(
         r"\bWP\s*/\s*\d{1,6}\s*/\s*\d{2,4}\b",
         text,
@@ -67,7 +67,7 @@ def extract_main_wp_cases(raw_text):
     return sorted(set(clean_cases))
 
 # ==================================================
-# 📥 PDF LINK → TEXT (PRIMARY AUTOMATION)
+# 📥 PDF LINK → TEXT
 # ==================================================
 def read_pdfs_to_text(pdf_urls):
     collected_text = []
@@ -151,7 +151,7 @@ else:
     )
 
 # ==================================================
-# 📊 EXCEL INPUT (UNCHANGED)
+# 📊 EXCEL INPUT
 # ==================================================
 xls_file = st.file_uploader(
     "📊 Upload Excel File",
@@ -159,7 +159,7 @@ xls_file = st.file_uploader(
 )
 
 # ==================================================
-# 🔁 PROCESSING (UNCHANGED LOGIC)
+# 🔁 PROCESSING
 # ==================================================
 if cause_text and xls_file:
     with st.status("Processing...", expanded=True):
@@ -172,7 +172,9 @@ if cause_text and xls_file:
 
         for sheet in xls.sheet_names:
             df = pd.read_excel(xls, sheet_name=sheet)
-            df.columns = [c.lower().strip() for c in df.columns]
+
+            # ✅ FIXED COLUMN NORMALIZATION
+            df.columns = [str(c).lower().strip() for c in df.columns]
 
             case_col = next(
                 (c for c in df.columns if c in ["case no", "caseno", "case number"]),
@@ -186,6 +188,7 @@ if cause_text and xls_file:
             if not case_col or not year_col:
                 continue
 
+            # Case number handling
             df[case_col] = df[case_col].astype(str)
             df = df[~df[case_col].str.strip().eq("")]
             if df.empty:
@@ -193,6 +196,7 @@ if cause_text and xls_file:
 
             df[case_col] = df[case_col].str.replace(r"\s+", "", regex=True)
 
+            # Year handling
             year_series = pd.to_numeric(df[year_col], errors="coerce")
             if year_series.notna().any():
                 detected_year = int(year_series.dropna().iloc[0])
@@ -205,6 +209,7 @@ if cause_text and xls_file:
 
             df[year_col] = year_series.fillna(detected_year).astype(int)
 
+            # Build comparison key
             df["Temp_FullCase"] = (
                 "WP/" +
                 df[case_col] +
