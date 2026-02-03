@@ -2,33 +2,40 @@ import streamlit as st
 import pandas as pd
 import re
 import requests
-from bs4 import BeautifulSoup
 import pdfplumber
 import io
+import urllib3
+
+# --------------------------------------------------
+# SSL warning suppression (safe for public PDFs)
+# --------------------------------------------------
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (APHC-Case-Matcher)"
+}
 
 # --------------------------------------------------
 # Page configuration
 # --------------------------------------------------
 st.set_page_config(
-    page_title="APHC Case Matcher – Auto / Manual",
+    page_title="APHC Case Matcher – Main Cases Only",
     page_icon="⚖️",
     layout="wide"
 )
 
-st.title("⚖️ APHC Case Matcher (Manual or Automatic Cause List)")
+st.title("⚖️ APHC Case Matcher (PDF Link / Manual Paste)")
 
 st.markdown("""
-### How this app works
-- Choose **Cause List source**:
-  - ✍️ Manual paste **OR**
-  - 🤖 Automatic fetch from APHC Online Board
-- Upload **Excel case file** separately
-- App compares **Cause List TEXT vs Excel FILE**
-- Matching logic is **IDENTICAL** to the old app
+### How to use
+1. **Preferred**: Paste **cause list PDF link(s)** (one per line)  
+2. **Backup**: Paste cause list text manually  
+3. Upload **Excel case file**  
+4. App matches **MAIN WP cases only**
 """)
 
 # ==================================================
-# 🔒 MATCHING LOGIC (UNCHANGED – COPIED AS-IS)
+# 🔒 MATCHING LOGIC (UNCHANGED – YOUR ORIGINAL CODE)
 # ==================================================
 def extract_main_wp_cases(raw_text):
     if not raw_text.strip():
@@ -57,82 +64,94 @@ def extract_main_wp_cases(raw_text):
         m = re.sub(r"\s*/\s*", "/", m)
         clean_cases.append(m.upper())
 
-    clean_cases = sorted(set(clean_cases))
-    return clean_cases
-
+    return sorted(set(clean_cases))
 
 # ==================================================
-# 🤖 AUTOMATIC FETCH HELPERS
+# 📥 PDF LINK → TEXT (PRIMARY AUTOMATION)
 # ==================================================
-BOARD_URL = "https://aphc.gov.in/Hcdbs/online_board.jsp"
+def read_pdfs_to_text(pdf_urls):
+    collected_text = []
 
-def fetch_uploaded_pdf_links():
-    r = requests.get(BOARD_URL, timeout=20)
-    r.raise_for_status()
+    for url in pdf_urls:
+        try:
+            r = requests.get(
+                url,
+                headers=HEADERS,
+                timeout=30,
+                verify=False
+            )
+            r.raise_for_status()
 
-    soup = BeautifulSoup(r.text, "html.parser")
-    table = soup.find("table")
-    pdf_links = []
+            with pdfplumber.open(io.BytesIO(r.content)) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        collected_text.append(text)
 
-    if not table:
-        return pdf_links
+        except Exception:
+            st.warning(f"⚠️ Unable to read PDF: {url}")
 
-    rows = table.find_all("tr")[1:]
-    for row in rows:
-        row_text = row.get_text(" ", strip=True).upper()
-        if "UPLOADED" not in row_text:
-            continue
-
-        link = row.find("a")
-        if link and link.get("href"):
-            pdf_links.append("https://aphc.gov.in" + link["href"])
-
-    return pdf_links
-
-
-def read_pdfs_to_text(pdf_links):
-    combined_text = ""
-    for url in pdf_links:
-        pdf_bytes = requests.get(url, timeout=30).content
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    combined_text += text + "\n"
-    return combined_text
-
+    return "\n".join(collected_text)
 
 # ==================================================
-# 🧭 CAUSE LIST INPUT SELECTION
+# 🧾 CAUSE LIST INPUT
 # ==================================================
+st.markdown("## 🧾 Cause List Input")
+
 input_mode = st.radio(
-    "Cause list input method",
-    ["Manual paste", "Automatic fetch"]
+    "Choose input method",
+    ["Paste PDF link(s) (recommended)", "Manual paste (backup)"]
 )
 
 cause_text = ""
 
-if input_mode == "Manual paste":
-    cause_text = st.text_area(
-        "📝 Paste Cause List Text",
-        height=300,
-        placeholder="Paste cause list text here..."
+# -------------------------------
+# OPTION 1: PDF LINKS
+# -------------------------------
+if input_mode == "Paste PDF link(s) (recommended)":
+    pdf_links_text = st.text_area(
+        "🔗 Paste cause list PDF link(s) — one per line",
+        height=150,
+        placeholder=(
+            "Example:\n"
+            "https://aphc.gov.in/.../court_1_causelist.pdf\n"
+            "https://aphc.gov.in/.../court_2_causelist.pdf"
+        )
     )
 
-else:
-    if st.button("📥 Fetch uploaded cause lists"):
-        with st.spinner("Fetching uploaded cause lists..."):
-            pdf_links = fetch_uploaded_pdf_links()
+    if pdf_links_text and st.button("📥 Download & read PDFs"):
+        pdf_links = [
+            line.strip()
+            for line in pdf_links_text.splitlines()
+            if line.strip().startswith("http")
+        ]
 
-            if not pdf_links:
-                st.warning("No uploaded cause lists found at this moment.")
-            else:
+        if not pdf_links:
+            st.error("No valid PDF links found.")
+        else:
+            with st.spinner("Downloading and extracting PDF text..."):
                 cause_text = read_pdfs_to_text(pdf_links)
-                st.success(f"Fetched {len(pdf_links)} cause list PDFs")
 
+            if cause_text.strip():
+                st.success("PDF text extracted successfully.")
+            else:
+                st.warning("No readable text found in PDFs.")
+
+# -------------------------------
+# OPTION 2: MANUAL PASTE
+# -------------------------------
+else:
+    cause_text = st.text_area(
+        "📝 Paste cause list text (from APHC website)",
+        height=300,
+        placeholder=(
+            "APHC → Daily Cause List → Court wise → Court No.\n"
+            "Select all visible text and paste here."
+        )
+    )
 
 # ==================================================
-# 📊 EXCEL UPLOAD (UNCHANGED)
+# 📊 EXCEL INPUT (UNCHANGED)
 # ==================================================
 xls_file = st.file_uploader(
     "📊 Upload Excel File",
@@ -211,11 +230,11 @@ if cause_text and xls_file:
         st.download_button(
             "📥 Download Matched Cases (CSV)",
             data=csv,
-            file_name="aphc_main_cases_only_auto.csv",
+            file_name="aphc_main_cases_only.csv",
             mime="text/csv"
         )
     else:
         st.warning("❌ No matching MAIN cases found.")
 
 else:
-    st.info("⬆️ Provide cause list (manual or automatic) and upload Excel to continue.")
+    st.info("⬆️ Provide cause list (PDF link or manual paste) and upload Excel to continue.")
