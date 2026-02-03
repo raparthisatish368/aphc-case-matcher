@@ -3,3 +3,6 @@ pandas
 requests
 beautifulsoup4
 pdfplumber
+openpyxl
+xlrd
+urllib3
