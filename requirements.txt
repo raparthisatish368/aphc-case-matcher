@@ -2,3 +2,8 @@ streamlit
 pandas
 PyMuPDF
 openpyxl
+streamlit
+pandas
+pdfplumber
+requests
+urllib3
