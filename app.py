@@ -1,9 +1,19 @@
 import streamlit as st
 import pandas as pd
 import re
+import requests
+import pdfplumber
+import io
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (APHC-Case-Matcher)"
+}
 
 # --------------------------------------------------
-# Page setup
+# PAGE SETUP
 # --------------------------------------------------
 st.set_page_config(
     page_title="APHC Case Matcher",
@@ -11,31 +21,27 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("⚖️ APHC Case Matcher")
-
-st.markdown("""
-### Rules
-- Extract only main WP cases
-- Ignore bracket content `( )`
-- Case number:
-  - Blank → skipped
-  - Spaces removed (`1 2 → 12`)
-- Year:
-  - Use first available year
-  - Else take from sheet name
-""")
+st.title("⚖️ APHC Case Matcher (PDF / Manual)")
 
 # --------------------------------------------------
-# Extract WP cases
+# EXTRACT CASES
 # --------------------------------------------------
 def extract_main_wp_cases(text):
     if not text.strip():
         return []
 
+    # Remove bracket content
     text = re.sub(r"\([^)]*\)", "", text)
+
+    # Remove ARISING FROM lines
+    lines = text.splitlines()
+    lines = [l for l in lines if "ARISING FROM" not in l.upper()]
+    text = " ".join(lines)
+
+    # Normalize whitespace
     text = re.sub(r"\s+", " ", text)
 
-    matches = re.findall(r"WP\s*/\s*\d+\s*/\s*\d+", text, re.I)
+    matches = re.findall(r"WP\s*/\s*\d{1,6}\s*/\s*\d{2,4}", text, re.I)
 
     clean = []
     for m in matches:
@@ -52,115 +58,155 @@ def extract_main_wp_cases(text):
     return sorted(set(clean))
 
 # --------------------------------------------------
-# UI
+# PDF READER
 # --------------------------------------------------
-cause_text = st.text_area("📝 Paste Cause List Text", height=250)
-excel_file = st.file_uploader("📊 Upload Excel", type=["xlsx", "xls"])
+def read_pdfs_to_text(urls):
+    output = []
+
+    for url in urls:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=30, verify=False)
+            r.raise_for_status()
+
+            with pdfplumber.open(io.BytesIO(r.content)) as pdf:
+                for page in pdf.pages:
+                    t = page.extract_text()
+                    if t:
+                        output.append(t)
+
+        except Exception:
+            st.warning(f"⚠️ Failed to read: {url}")
+
+    return "\n".join(output)
 
 # --------------------------------------------------
-# Processing
+# INPUT UI
 # --------------------------------------------------
-if cause_text and excel_file:
+mode = st.radio(
+    "Choose input method",
+    ["PDF link(s)", "Manual paste"]
+)
 
-    main_cases = extract_main_wp_cases(cause_text)
-    main_case_set = set(main_cases)
+cause_text = ""
 
-    st.write("### Extracted Cases")
-    st.write(main_cases[:20])
+if mode == "PDF link(s)":
+    pdf_input = st.text_area("Paste PDF links (one per line)")
 
-    xls = pd.ExcelFile(excel_file)
-    all_matches = []
+    if st.button("Read PDFs"):
+        links = [l.strip() for l in pdf_input.splitlines() if l.strip().startswith("http")]
+
+        if links:
+            with st.spinner("Reading PDFs..."):
+                cause_text = read_pdfs_to_text(links)
+
+            if cause_text.strip():
+                st.success("PDF text extracted")
+            else:
+                st.warning("No text extracted")
+        else:
+            st.error("Invalid links")
+
+else:
+    cause_text = st.text_area("Paste cause list text", height=300)
+
+xls_file = st.file_uploader("Upload Excel", type=["xlsx", "xls"])
+
+# --------------------------------------------------
+# PROCESSING
+# --------------------------------------------------
+if cause_text and xls_file:
+
+    main_cases = set(extract_main_wp_cases(cause_text))
+    xls = pd.ExcelFile(xls_file)
+    results = []
 
     for sheet in xls.sheet_names:
         df = pd.read_excel(xls, sheet_name=sheet)
 
-        # Normalize column names
-        df.columns = [c.lower().strip() for c in df.columns]
+        df.columns = [str(c).lower().strip() for c in df.columns]
 
-        # Detect columns
         case_col = next((c for c in df.columns if "case" in c), None)
         year_col = next((c for c in df.columns if "year" in c), None)
 
-        if not case_col or not year_col:
+        if not case_col:
             continue
 
         # -------------------------
-        # Clean case numbers
+        # CLEAN CASE NO
         # -------------------------
-        df[case_col] = df[case_col].astype(str)
-        df = df[~df[case_col].str.strip().eq("")]
+        df[case_col] = df[case_col].astype(str).str.replace(r"\s+", "", regex=True)
+        df = df[df[case_col].str.strip() != ""]
 
         if df.empty:
             continue
 
-        df[case_col] = df[case_col].str.replace(r"\s+", "", regex=True)
-
         # -------------------------
-        # Handle year
+        # YEAR DETECTION
         # -------------------------
-        year_series = pd.to_numeric(df[year_col], errors="coerce")
+        detected_year = None
 
-        if year_series.notna().any():
-            detected_year = int(year_series.dropna().iloc[0])
-        else:
-            match = re.search(r"(19|20)\d{2}", str(sheet))
-            if match:
-                detected_year = int(match.group())
+        if year_col:
+            yr = pd.to_numeric(df[year_col], errors="coerce")
+            if yr.notna().any():
+                detected_year = int(yr.dropna().iloc[0])
+
+        if not detected_year:
+            m = re.search(r"(19|20)\d{2}", str(sheet))
+            if m:
+                detected_year = int(m.group())
             else:
                 continue
 
-        df[year_col] = year_series.fillna(detected_year)
+        df["__year"] = detected_year
 
         # -------------------------
-        # Final normalization
+        # NORMALIZE CASE NUMBER
         # -------------------------
         case_series = pd.to_numeric(df[case_col], errors="coerce")
-        year_series = pd.to_numeric(df[year_col], errors="coerce")
 
-        # Remove invalid rows safely
-        valid_mask = case_series.notna() & year_series.notna()
+        valid_mask = case_series.notna()
         df = df[valid_mask]
         case_series = case_series[valid_mask]
-        year_series = year_series[valid_mask]
 
         if df.empty:
             continue
 
-        df["Temp_FullCase"] = (
+        # -------------------------
+        # BUILD MATCH KEY
+        # -------------------------
+        df["__fullcase"] = (
             "WP/" +
             case_series.astype("Int64").astype(str) +
             "/" +
-            year_series.astype("Int64").astype(str)
-        )
+            df["__year"].astype(str)
+        ).str.upper()
 
         # -------------------------
-        # Matching
+        # MATCH
         # -------------------------
-        matches = df[df["Temp_FullCase"].isin(main_case_set)].copy()
+        hit = df[df["__fullcase"].isin(main_cases)].copy()
 
-        if not matches.empty:
-            matches["Sheet"] = sheet
-            all_matches.append(matches)
+        if not hit.empty:
+            hit["Sheet"] = sheet
+            results.append(hit)
 
-    # -------------------------
-    # Output
-    # -------------------------
-    if all_matches:
-        final_df = pd.concat(all_matches, ignore_index=True)
-        final_df.drop(columns=["Temp_FullCase"], inplace=True)
+    # --------------------------------------------------
+    # OUTPUT
+    # --------------------------------------------------
+    if results:
+        out = pd.concat(results, ignore_index=True)
+        out.drop(columns=["__fullcase", "__year"], inplace=True, errors="ignore")
 
-        st.success(f"✅ {len(final_df)} matches found")
-        st.dataframe(final_df)
+        st.success(f"✅ {len(out)} matches found")
+        st.dataframe(out)
 
-        csv = final_df.to_csv(index=False).encode("utf-8")
         st.download_button(
-            "📥 Download CSV",
-            data=csv,
-            file_name="matched_cases.csv",
-            mime="text/csv"
+            "Download CSV",
+            out.to_csv(index=False).encode("utf-8"),
+            "matched_cases.csv"
         )
     else:
-        st.warning("❌ No matches found")
+        st.warning("No matches found")
 
 else:
-    st.info("⬆️ Paste text and upload Excel to start")
+    st.info("Provide input and Excel")
