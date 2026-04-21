@@ -17,27 +17,24 @@ st.markdown("""
 ### Rules
 - Extract only main WP cases
 - Ignore bracket content `( )`
-- Case number: remove spaces
-- Skip blank case numbers
+- Case number:
+  - Blank → skipped
+  - Spaces removed (`1 2 → 12`)
 - Year:
   - Use first available year
   - Else take from sheet name
 """)
 
 # --------------------------------------------------
-# Extract WP cases from text
+# Extract WP cases
 # --------------------------------------------------
 def extract_main_wp_cases(text):
     if not text.strip():
         return []
 
-    # Remove bracket content
     text = re.sub(r"\([^)]*\)", "", text)
-
-    # Normalize whitespace
     text = re.sub(r"\s+", " ", text)
 
-    # Extract WP cases
     matches = re.findall(r"WP\s*/\s*\d+\s*/\s*\d+", text, re.I)
 
     clean = []
@@ -76,8 +73,11 @@ if cause_text and excel_file:
 
     for sheet in xls.sheet_names:
         df = pd.read_excel(xls, sheet_name=sheet)
+
+        # Normalize column names
         df.columns = [c.lower().strip() for c in df.columns]
 
+        # Detect columns
         case_col = next((c for c in df.columns if "case" in c), None)
         year_col = next((c for c in df.columns if "year" in c), None)
 
@@ -85,7 +85,7 @@ if cause_text and excel_file:
             continue
 
         # -------------------------
-        # Clean case number
+        # Clean case numbers
         # -------------------------
         df[case_col] = df[case_col].astype(str)
         df = df[~df[case_col].str.strip().eq("")]
@@ -96,7 +96,7 @@ if cause_text and excel_file:
         df[case_col] = df[case_col].str.replace(r"\s+", "", regex=True)
 
         # -------------------------
-        # Year handling
+        # Handle year
         # -------------------------
         year_series = pd.to_numeric(df[year_col], errors="coerce")
 
@@ -112,18 +112,25 @@ if cause_text and excel_file:
         df[year_col] = year_series.fillna(detected_year)
 
         # -------------------------
-        # Normalize both fields
+        # Final normalization
         # -------------------------
         case_series = pd.to_numeric(df[case_col], errors="coerce")
         year_series = pd.to_numeric(df[year_col], errors="coerce")
 
-        df = df[case_series.notna() & year_series.notna()]
+        # Remove invalid rows safely
+        valid_mask = case_series.notna() & year_series.notna()
+        df = df[valid_mask]
+        case_series = case_series[valid_mask]
+        year_series = year_series[valid_mask]
+
+        if df.empty:
+            continue
 
         df["Temp_FullCase"] = (
             "WP/" +
-            case_series.astype(int).astype(str) +
+            case_series.astype("Int64").astype(str) +
             "/" +
-            year_series.astype(int).astype(str)
+            year_series.astype("Int64").astype(str)
         )
 
         # -------------------------
