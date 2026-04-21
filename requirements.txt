@@ -7,3 +7,4 @@ pandas
 pdfplumber
 requests
 urllib3
+xlsxwriter
