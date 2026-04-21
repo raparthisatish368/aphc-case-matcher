@@ -31,41 +31,24 @@ st.markdown("""
 # Extract ONLY standalone main WP cases from text
 # --------------------------------------------------
 def extract_main_wp_cases(raw_text):
-    if not raw_text.strip():
-        return []
-
-    # Remove bracketed content completely
     text = re.sub(r"\([^)]*\)", "", raw_text)
-
-    # Remove lines containing "ARISING FROM"
-    lines = text.splitlines()
-    lines = [l for l in lines if "ARISING FROM" not in l.upper()]
-    text = " ".join(lines)
-
-    # Normalize whitespace
     text = re.sub(r"\s+", " ", text)
 
-    # Extract ONLY standalone WP cases
-    matches = re.findall(
-        r"\bWP\s*/\s*\d{1,6}\s*/\s*\d{2,4}\b",
-        text,
-        flags=re.IGNORECASE
-    )
+    matches = re.findall(r"WP\s*/\s*\d{1,6}\s*/\s*\d{2,4}", text, re.I)
 
     clean_cases = []
     for m in matches:
         m = re.sub(r"\s*/\s*", "/", m)
-        clean_cases.append(m.upper())
+        parts = m.upper().split("/")
 
-    clean_cases = sorted(set(clean_cases))
+        try:
+            case_no = str(int(parts[1]))
+            year = str(int(parts[2]))
+            clean_cases.append(f"WP/{case_no}/{year}")
+        except:
+            continue
 
-    st.write("### 📄 Cause List Debug")
-    st.write(f"Main WP cases extracted: **{len(clean_cases)}**")
-    if clean_cases:
-        st.write(clean_cases)
-
-    return clean_cases
-
+    return sorted(set(clean_cases))
 # --------------------------------------------------
 # UI Inputs
 # --------------------------------------------------
@@ -156,7 +139,7 @@ if cause_text and xls_file:
             # --------------------------------------------------
             # Match against cause list
             # --------------------------------------------------
-            matches = df[df["Temp_FullCase"].isin(main_case_set)].copy()
+            matches = df[df["# Clean case number df[case_col] = df[case_col].astype(str) df = df[~df[case_col].str.strip().eq("")] df[case_col] = df[case_col].str.replace(r"\s+", "", regex=True)  # Convert to numeric safely case_series = pd.to_numeric(df[case_col], errors="coerce") year_series = pd.to_numeric(df[year_col], errors="coerce")  # Drop invalid rows df = df[case_series.notna() & year_series.notna()]  # Build final comparison key df["Temp_FullCase"] = (     "WP/" +     case_series.astype(int).astype(str) +     "/" +     year_series.astype(int).astype(str) )"].isin(main_case_set)].copy()
 
             if not matches.empty:
                 matches["Sheet_Source"] = sheet
