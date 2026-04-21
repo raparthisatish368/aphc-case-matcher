@@ -3,52 +3,44 @@ import pandas as pd
 import re
 
 # --------------------------------------------------
-# Page configuration
+# Page setup
 # --------------------------------------------------
 st.set_page_config(
-    page_title="APHC Case Matcher – Main Cases Only",
+    page_title="APHC Case Matcher",
     page_icon="⚖️",
     layout="wide"
 )
 
-st.title("⚖️ APHC Case Matcher (Main Cases Only)")
+st.title("⚖️ APHC Case Matcher")
 
 st.markdown("""
-### Rules applied
-- ✅ Extract **only main WP cases**
-- ❌ Ignore anything inside `( )`
-- ❌ Ignore **ARISING FROM** cases
-- ✅ Case No:
-  - Blank → skipped
-  - Spaces removed (`"1 2"` → `12`)
-- ✅ Year:
-  1. Use first valid year in column
-  2. Else take from sheet name
-  3. Else skip sheet
+### Rules
+- Extract only main WP cases
+- Ignore bracket content `( )`
+- Case number: remove spaces
+- Skip blank case numbers
+- Year:
+  - Use first available year
+  - Else take from sheet name
 """)
 
 # --------------------------------------------------
-# Extract main WP cases
+# Extract WP cases from text
 # --------------------------------------------------
-def extract_main_wp_cases(raw_text):
-    if not raw_text.strip():
+def extract_main_wp_cases(text):
+    if not text.strip():
         return []
 
     # Remove bracket content
-    text = re.sub(r"\([^)]*\)", "", raw_text)
+    text = re.sub(r"\([^)]*\)", "", text)
 
-    # Normalize spaces
+    # Normalize whitespace
     text = re.sub(r"\s+", " ", text)
 
-    # Extract WP patterns
-    matches = re.findall(
-        r"WP\s*/\s*\d{1,6}\s*/\s*\d{2,4}",
-        text,
-        re.IGNORECASE
-    )
+    # Extract WP cases
+    matches = re.findall(r"WP\s*/\s*\d+\s*/\s*\d+", text, re.I)
 
-    clean_cases = []
-
+    clean = []
     for m in matches:
         m = re.sub(r"\s*/\s*", "/", m)
         parts = m.upper().split("/")
@@ -56,61 +48,45 @@ def extract_main_wp_cases(raw_text):
         try:
             case_no = str(int(parts[1]))
             year = str(int(parts[2]))
-            clean_cases.append(f"WP/{case_no}/{year}")
+            clean.append(f"WP/{case_no}/{year}")
         except:
             continue
 
-    return sorted(set(clean_cases))
+    return sorted(set(clean))
 
 # --------------------------------------------------
 # UI
 # --------------------------------------------------
-cause_text = st.text_area(
-    "📝 Paste Cause List Text",
-    height=300
-)
-
-xls_file = st.file_uploader(
-    "📊 Upload Excel File",
-    type=["xlsx", "xls"]
-)
+cause_text = st.text_area("📝 Paste Cause List Text", height=250)
+excel_file = st.file_uploader("📊 Upload Excel", type=["xlsx", "xls"])
 
 # --------------------------------------------------
 # Processing
 # --------------------------------------------------
-if cause_text and xls_file:
+if cause_text and excel_file:
 
     main_cases = extract_main_wp_cases(cause_text)
     main_case_set = set(main_cases)
 
-    st.write("### 🔍 Extracted Cases")
+    st.write("### Extracted Cases")
     st.write(main_cases[:20])
 
-    xls = pd.ExcelFile(xls_file)
+    xls = pd.ExcelFile(excel_file)
     all_matches = []
 
     for sheet in xls.sheet_names:
         df = pd.read_excel(xls, sheet_name=sheet)
-
-        # Normalize column names
         df.columns = [c.lower().strip() for c in df.columns]
 
-        # Detect columns
-        case_col = next(
-            (c for c in df.columns if c in ["case no", "caseno", "case number"]),
-            None
-        )
-        year_col = next(
-            (c for c in df.columns if c in ["case year", "year"]),
-            None
-        )
+        case_col = next((c for c in df.columns if "case" in c), None)
+        year_col = next((c for c in df.columns if "year" in c), None)
 
         if not case_col or not year_col:
             continue
 
-        # -----------------------------
-        # CASE NO CLEANING
-        # -----------------------------
+        # -------------------------
+        # Clean case number
+        # -------------------------
         df[case_col] = df[case_col].astype(str)
         df = df[~df[case_col].str.strip().eq("")]
 
@@ -119,9 +95,9 @@ if cause_text and xls_file:
 
         df[case_col] = df[case_col].str.replace(r"\s+", "", regex=True)
 
-        # -----------------------------
-        # YEAR LOGIC
-        # -----------------------------
+        # -------------------------
+        # Year handling
+        # -------------------------
         year_series = pd.to_numeric(df[year_col], errors="coerce")
 
         if year_series.notna().any():
@@ -135,9 +111,9 @@ if cause_text and xls_file:
 
         df[year_col] = year_series.fillna(detected_year)
 
-        # -----------------------------
-        # FINAL NORMALIZATION
-        # -----------------------------
+        # -------------------------
+        # Normalize both fields
+        # -------------------------
         case_series = pd.to_numeric(df[case_col], errors="coerce")
         year_series = pd.to_numeric(df[year_col], errors="coerce")
 
@@ -150,18 +126,18 @@ if cause_text and xls_file:
             year_series.astype(int).astype(str)
         )
 
-        # -----------------------------
-        # MATCHING
-        # -----------------------------
+        # -------------------------
+        # Matching
+        # -------------------------
         matches = df[df["Temp_FullCase"].isin(main_case_set)].copy()
 
         if not matches.empty:
-            matches["Sheet_Source"] = sheet
+            matches["Sheet"] = sheet
             all_matches.append(matches)
 
-    # --------------------------------------------------
-    # Results
-    # --------------------------------------------------
+    # -------------------------
+    # Output
+    # -------------------------
     if all_matches:
         final_df = pd.concat(all_matches, ignore_index=True)
         final_df.drop(columns=["Temp_FullCase"], inplace=True)
@@ -180,174 +156,4 @@ if cause_text and xls_file:
         st.warning("❌ No matches found")
 
 else:
-    st.info("⬆️ Paste text and upload Excel to start")import streamlit as st
-import pandas as pd
-import re
-
-# --------------------------------------------------
-# Page configuration
-# --------------------------------------------------
-st.set_page_config(
-    page_title="APHC Case Matcher – Main Cases Only",
-    page_icon="⚖️",
-    layout="wide"
-)
-
-st.title("⚖️ APHC Case Matcher (Main Cases Only)")
-
-st.markdown("""
-### Rules applied
-- ✅ Extract **only main WP cases**
-- ❌ Ignore anything inside `( )`
-- ❌ Ignore **ARISING FROM** cases
-- ✅ Case No rules:
-  - Blank cell → skipped
-  - Spaces allowed → spaces removed (`"1 2"` → `12`)
-- ✅ Year rules (STRICT ORDER):
-  1. If **any row** has a year → use first valid year
-  2. Else infer year from **sheet name** (e.g. `2022`)
-  3. Else skip the sheet
-""")
-
-# --------------------------------------------------
-# Extract ONLY standalone main WP cases from text
-# --------------------------------------------------
-def extract_main_wp_cases(raw_text):
-    text = re.sub(r"\([^)]*\)", "", raw_text)
-    text = re.sub(r"\s+", " ", text)
-
-    matches = re.findall(r"WP\s*/\s*\d{1,6}\s*/\s*\d{2,4}", text, re.I)
-
-    clean_cases = []
-    for m in matches:
-        m = re.sub(r"\s*/\s*", "/", m)
-        parts = m.upper().split("/")
-
-        try:
-            case_no = str(int(parts[1]))
-            year = str(int(parts[2]))
-            clean_cases.append(f"WP/{case_no}/{year}")
-        except:
-            continue
-
-    return sorted(set(clean_cases))
-# --------------------------------------------------
-# UI Inputs
-# --------------------------------------------------
-cause_text = st.text_area(
-    "📝 Paste Cause List Text",
-    height=300,
-    placeholder="Paste cause list text here..."
-)
-
-xls_file = st.file_uploader(
-    "📊 Upload Excel File",
-    type=["xlsx", "xls"]
-)
-
-# --------------------------------------------------
-# Processing
-# --------------------------------------------------
-if cause_text and xls_file:
-    with st.status("Processing...", expanded=True):
-
-        main_cases = extract_main_wp_cases(cause_text)
-        main_case_set = set(main_cases)
-
-        xls = pd.ExcelFile(xls_file)
-        all_matches = []
-
-        for sheet in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=sheet)
-
-            # Normalize column names
-            df.columns = [c.lower().strip() for c in df.columns]
-
-            # Detect required columns
-            case_col = next(
-                (c for c in df.columns if c in ["case no", "caseno", "case number"]),
-                None
-            )
-            year_col = next(
-                (c for c in df.columns if c in ["case year", "year"]),
-                None
-            )
-
-            if not case_col or not year_col:
-                continue
-
-            # --------------------------------------------------
-            # CASE NO LOGIC
-            # --------------------------------------------------
-            df[case_col] = df[case_col].astype(str)
-
-            # Skip rows where case no is completely blank
-            df = df[~df[case_col].str.strip().eq("")]
-            if df.empty:
-                continue
-
-            # Remove all spaces inside case number
-            df[case_col] = df[case_col].str.replace(r"\s+", "", regex=True)
-
-            # --------------------------------------------------
-            # YEAR LOGIC (ROBUST)
-            # --------------------------------------------------
-            year_series = pd.to_numeric(df[year_col], errors="coerce")
-
-            if year_series.notna().any():
-                # Priority 1: take first valid year from column
-                detected_year = int(year_series.dropna().iloc[0])
-            else:
-                # Priority 2: infer year from sheet name
-                sheet_year_match = re.search(r"\b(19|20)\d{2}\b", sheet)
-                if sheet_year_match:
-                    detected_year = int(sheet_year_match.group())
-                else:
-                    continue  # no year anywhere → skip sheet safely
-
-            # Fill missing years with detected year
-            df[year_col] = year_series.fillna(detected_year).astype(int)
-
-            # --------------------------------------------------
-            # Build comparison key
-            # --------------------------------------------------
-            df["Temp_FullCase"] = (
-                "WP/" +
-                df[case_col] +
-                "/" +
-                df[year_col].astype(str)
-            ).str.upper()
-
-            # --------------------------------------------------
-            # Match against cause list
-            # --------------------------------------------------
-            matches = df[df["# Clean case number df[case_col] = df[case_col].astype(str) df = df[~df[case_col].str.strip().eq("")] df[case_col] = df[case_col].str.replace(r"\s+", "", regex=True)  # Convert to numeric safely case_series = pd.to_numeric(df[case_col], errors="coerce") year_series = pd.to_numeric(df[year_col], errors="coerce")  # Drop invalid rows df = df[case_series.notna() & year_series.notna()]  # Build final comparison key df["Temp_FullCase"] = (     "WP/" +     case_series.astype(int).astype(str) +     "/" +     year_series.astype(int).astype(str) )"].isin(main_case_set)].copy()
-
-            if not matches.empty:
-                matches["Sheet_Source"] = sheet
-                all_matches.append(matches)
-
-        st.success("Processing completed")
-
-    # --------------------------------------------------
-    # Results
-    # --------------------------------------------------
-    if all_matches:
-        final_df = pd.concat(all_matches, ignore_index=True)
-        final_df.drop(columns=["Temp_FullCase"], inplace=True)
-
-        st.success(f"✅ {len(final_df)} matching MAIN cases found")
-        st.dataframe(final_df, use_container_width=True)
-
-        csv = final_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "📥 Download Matched Cases (CSV)",
-            data=csv,
-            file_name="aphc_main_cases_only.csv",
-            mime="text/csv"
-        )
-    else:
-        st.warning("❌ No matching MAIN cases found.")
-
-else:
-    st.info("⬆️ Paste cause list text and upload Excel to continue.")
+    st.info("⬆️ Paste text and upload Excel to start")
