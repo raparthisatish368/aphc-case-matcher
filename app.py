@@ -192,7 +192,10 @@ if cause_text and xls_file:
     # --------------------------------------------------
     # FINAL RESULT
     # --------------------------------------------------
-    if results:
+    # -------------------------
+# FINAL RESULT
+# -------------------------
+if results:
     final = pd.concat(results, ignore_index=True)
     final.drop(columns=["__fullcase", "__year"], inplace=True, errors="ignore")
 
@@ -202,15 +205,6 @@ if cause_text and xls_file:
 else:
     st.warning("No matches found")
     final = pd.DataFrame()
-    final.drop(columns=["__fullcase", "__year"], inplace=True, errors="ignore")
-
-    st.success(f"✅ Matched Rows: {len(final)}")
-    st.dataframe(final)
-
-else:
-    st.warning("No matches found")
-    final = pd.DataFrame()  # 🔥 IMPORTANT FIX
-
     # -------------------------
     # UNMATCHED
     # -------------------------
