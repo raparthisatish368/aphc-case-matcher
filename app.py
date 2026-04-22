@@ -193,14 +193,15 @@ if cause_text and xls_file:
     # FINAL RESULT
     # --------------------------------------------------
     if results:
-        final = pd.concat(results, ignore_index=True)
-        final.drop(columns=["__fullcase", "__year"], inplace=True, errors="ignore")
+    final = pd.concat(results, ignore_index=True)
+    final.drop(columns=["__fullcase", "__year"], inplace=True, errors="ignore")
 
-        st.success(f"✅ Matched Rows: {len(final)}")
-        st.dataframe(final)
+    st.success(f"✅ Matched Rows: {len(final)}")
+    st.dataframe(final)
 
-    else:
-        st.warning("No matches found")
+else:
+    st.warning("No matches found")
+    final = pd.DataFrame()  # 🔥 IMPORTANT FIX
 
     # -------------------------
     # UNMATCHED
@@ -223,7 +224,12 @@ if cause_text and xls_file:
     output = BytesIO()
 
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        final.to_excel(writer, index=False, sheet_name="Matched")
+        if not final.empty:
+    final.to_excel(writer, index=False, sheet_name="Matched")
+else:
+    pd.DataFrame({"Message": ["No matched cases"]}).to_excel(
+        writer, sheet_name="Matched", index=False
+    )
 
         workbook = writer.book
         worksheet = writer.sheets["Matched"]
