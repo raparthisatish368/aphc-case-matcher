@@ -11,13 +11,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 HEADERS = {"User-Agent": "APHC-Case-Matcher"}
 
 # --------------------------------------------------
-# PAGE SETUP
+# PAGE
 # --------------------------------------------------
-st.set_page_config(page_title="APHC Ultimate Matcher", layout="wide")
-st.title("⚖️ APHC Ultimate Case Matcher")
+st.set_page_config(page_title="APHC Case Matcher", layout="wide")
+st.title("⚖️ APHC Case Matcher")
 
 # --------------------------------------------------
-# EXTRACT CASES (STRICT RULES)
+# EXTRACT CASES
 # --------------------------------------------------
 def extract_cases(text):
     text = re.sub(r"\([^)]*\)", "", text)
@@ -56,7 +56,7 @@ def read_pdfs(urls):
                     if t:
                         text += t + "\n"
         except:
-            st.warning(f"⚠️ Failed to read: {url}")
+            st.warning(f"⚠️ Failed: {url}")
     return text
 
 # --------------------------------------------------
@@ -67,7 +67,7 @@ mode = st.radio("Input Mode", ["PDF Links", "Manual Text"])
 cause_text = ""
 
 if mode == "PDF Links":
-    links = st.text_area("Paste PDF links (one per line)")
+    links = st.text_area("Paste PDF links")
     if st.button("Read PDFs"):
         urls = [l.strip() for l in links.splitlines() if l.startswith("http")]
         cause_text = read_pdfs(urls)
@@ -87,6 +87,7 @@ if cause_text and xls_file:
     st.write(f"📊 Extracted Cases: {len(main_cases)}")
 
     xls = pd.ExcelFile(xls_file)
+
     results = []
     skipped_rows = []
     matched_cases = set()
@@ -99,11 +100,10 @@ if cause_text and xls_file:
         year_col = next((c for c in df.columns if "year" in c), None)
 
         if not case_col:
-            st.warning(f"⚠️ Sheet '{sheet}' skipped: No case column")
             continue
 
         # -------------------------
-        # CASE CLEANING
+        # CLEAN CASE NO
         # -------------------------
         df[case_col] = df[case_col].astype(str)
         df[case_col] = df[case_col].str.replace(r"\D", "", regex=True)
@@ -113,7 +113,7 @@ if cause_text and xls_file:
             continue
 
         # -------------------------
-        # YEAR LOGIC (ROW SAFE)
+        # YEAR LOGIC
         # -------------------------
         detected_year = None
         year_series = None
@@ -133,6 +133,7 @@ if cause_text and xls_file:
         else:
             df["__year"] = None
 
+        # 🔥 IMPORTANT FIX (NaN handling)
         if detected_year:
             df["__year"] = df["__year"].fillna(detected_year)
 
@@ -149,8 +150,16 @@ if cause_text and xls_file:
             case_val = row[case_col]
             year_val = row["__year"]
 
+            # 🔥 FINAL NaN FIX
+            if pd.isna(year_val):
+                year_val = detected_year
+
             try:
                 case_num = int(case_val)
+
+                if pd.isna(year_val):
+                    raise ValueError
+
                 year_num = int(year_val)
 
                 full_case = f"WP/{case_num}/{year_num}"
@@ -164,7 +173,7 @@ if cause_text and xls_file:
                     "Row_Index": idx,
                     "Case_No": case_val,
                     "Year": year_val,
-                    "Reason": "Invalid case/year"
+                    "Reason": "Invalid case or year"
                 })
 
         df = df.loc[valid_indices]
@@ -181,27 +190,27 @@ if cause_text and xls_file:
             results.append(hit)
 
     # --------------------------------------------------
-    # OUTPUT
+    # FINAL RESULT
     # --------------------------------------------------
     if results:
         final = pd.concat(results, ignore_index=True)
         final.drop(columns=["__fullcase", "__year"], inplace=True, errors="ignore")
 
-        st.success(f"✅ Matched: {len(final)}")
+        st.success(f"✅ Matched Rows: {len(final)}")
         st.dataframe(final)
 
     else:
         st.warning("No matches found")
 
     # -------------------------
-    # UNMATCHED SUMMARY
+    # UNMATCHED
     # -------------------------
     unmatched = main_cases - matched_cases
     st.write(f"❌ Unmatched Cases: {len(unmatched)}")
     st.write(list(unmatched)[:20])
 
     # -------------------------
-    # SKIPPED ROWS DISPLAY
+    # SKIPPED ROWS
     # -------------------------
     if skipped_rows:
         st.warning(f"⚠️ Skipped Rows: {len(skipped_rows)}")
@@ -209,7 +218,7 @@ if cause_text and xls_file:
         st.dataframe(skipped_df)
 
     # -------------------------
-    # EXCEL DOWNLOAD (HIGHLIGHT)
+    # EXCEL DOWNLOAD
     # -------------------------
     output = BytesIO()
 
@@ -234,7 +243,7 @@ if cause_text and xls_file:
             )
 
     st.download_button(
-        "📥 Download Excel (Formatted)",
+        "📥 Download Excel",
         output.getvalue(),
         "final_output.xlsx"
     )
