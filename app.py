@@ -67,7 +67,7 @@ mode = st.radio("Input Mode", ["PDF Links", "Manual Text"])
 cause_text = ""
 
 if mode == "PDF Links":
-    links = st.text_area("Paste PDF links")
+    links = st.text_area("Paste PDF links (one per line)")
     if st.button("Read PDFs"):
         urls = [l.strip() for l in links.splitlines() if l.startswith("http")]
         cause_text = read_pdfs(urls)
@@ -133,7 +133,6 @@ if cause_text and xls_file:
         else:
             df["__year"] = None
 
-        # 🔥 IMPORTANT FIX (NaN handling)
         if detected_year:
             df["__year"] = df["__year"].fillna(detected_year)
 
@@ -150,7 +149,6 @@ if cause_text and xls_file:
             case_val = row[case_col]
             year_val = row["__year"]
 
-            # 🔥 FINAL NaN FIX
             if pd.isna(year_val):
                 year_val = detected_year
 
@@ -189,22 +187,20 @@ if cause_text and xls_file:
             matched_cases.update(hit["__fullcase"])
             results.append(hit)
 
-    # --------------------------------------------------
-    # FINAL RESULT
-    # --------------------------------------------------
     # -------------------------
-# FINAL RESULT
-# -------------------------
-if results:
-    final = pd.concat(results, ignore_index=True)
-    final.drop(columns=["__fullcase", "__year"], inplace=True, errors="ignore")
+    # FINAL RESULT
+    # -------------------------
+    if results:
+        final = pd.concat(results, ignore_index=True)
+        final.drop(columns=["__fullcase", "__year"], inplace=True, errors="ignore")
 
-    st.success(f"✅ Matched Rows: {len(final)}")
-    st.dataframe(final)
+        st.success(f"✅ Matched Rows: {len(final)}")
+        st.dataframe(final)
 
-else:
-    st.warning("No matches found")
-    final = pd.DataFrame()
+    else:
+        st.warning("No matches found")
+        final = pd.DataFrame()
+
     # -------------------------
     # UNMATCHED
     # -------------------------
@@ -226,20 +222,13 @@ else:
     output = BytesIO()
 
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+
         if not final.empty:
-    final.to_excel(writer, index=False, sheet_name="Matched")
-else:
-    pd.DataFrame({"Message": ["No matched cases"]}).to_excel(
-        writer, sheet_name="Matched", index=False
-    )
-
-        workbook = writer.book
-        worksheet = writer.sheets["Matched"]
-
-        green = workbook.add_format({"bg_color": "#C6EFCE"})
-
-        for row in range(1, len(final) + 1):
-            worksheet.set_row(row, cell_format=green)
+            final.to_excel(writer, index=False, sheet_name="Matched")
+        else:
+            pd.DataFrame({"Message": ["No matched cases"]}).to_excel(
+                writer, sheet_name="Matched", index=False
+            )
 
         pd.DataFrame({"Unmatched": list(unmatched)}).to_excel(
             writer, sheet_name="Unmatched", index=False
