@@ -105,9 +105,12 @@ if cause_text and xls_file:
         # -------------------------
         # CLEAN CASE NO
         # -------------------------
-        df[case_col] = df[case_col].astype(str)
-        df[case_col] = df[case_col].str.replace(r"\D", "", regex=True)
-        df = df[df[case_col] != ""]
+        # CLEAN CASE NO (FIXED)
+        df[case_col] = pd.to_numeric(df[case_col], errors="coerce")
+        df[case_col] = df[case_col].astype("Int64")
+
+        # remove invalid case rows
+        df = df[df[case_col].notna()]
 
         if df.empty:
             continue
