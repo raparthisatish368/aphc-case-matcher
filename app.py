@@ -103,13 +103,11 @@ if cause_text and xls_file:
             continue
 
         # -------------------------
-        # CLEAN CASE NO
+        # CLEAN CASE NO (FIXED ONLY THIS PART)
         # -------------------------
-        # CLEAN CASE NO (FIXED)
         df[case_col] = pd.to_numeric(df[case_col], errors="coerce")
         df[case_col] = df[case_col].astype("Int64")
 
-        # remove invalid case rows
         df = df[df[case_col].notna()]
 
         if df.empty:
