@@ -1,8 +1,7 @@
 streamlit
 pandas
 requests
-beautifulsoup4
 pdfplumber
 openpyxl
-xlrd
+xlsxwriter
 urllib3
