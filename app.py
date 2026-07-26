@@ -55,8 +55,9 @@ def read_pdfs(urls):
                     t = page.extract_text()
                     if t:
                         text += t + "\n"
-        except:
-            st.warning(f"⚠️ Failed: {url}")
+        except Exception as e:
+            st.error(f"❌ Failed: {url}")
+    st.code(repr(e))
     return text
 
 # --------------------------------------------------
