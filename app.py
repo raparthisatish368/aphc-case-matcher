@@ -1,124 +1,6 @@
-import streamlit as st
-import pandas as pd
-import re
-import requests
-import pdfplumber
-from io import BytesIO
-import urllib3
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-HEADERS = {"User-Agent": "APHC-Case-Matcher"}
-
-# --------------------------------------------------
-# PAGE
-# --------------------------------------------------
-st.set_page_config(page_title="APHC Case Matcher", layout="wide")
-st.title("⚖️ APHC Case Matcher")
-
-# --------------------------------------------------
-# EXTRACT CASES
-# --------------------------------------------------
-def extract_cases(text):
-    text = re.sub(r"\([^)]*\)", "", text)
-
-    lines = text.splitlines()
-    lines = [l for l in lines if "ARISING FROM" not in l.upper()]
-    text = " ".join(lines)
-
-    text = re.sub(r"\s+", " ", text)
-
-    matches = re.findall(r"WP\s*/\s*\d+\s*/\s*\d+", text, re.I)
-
-    clean = []
-    for m in matches:
-        m = re.sub(r"\s*/\s*", "/", m)
-        parts = m.upper().split("/")
-        try:
-            clean.append(f"WP/{int(parts[1])}/{int(parts[2])}")
-        except:
-            continue
-
-    return sorted(set(clean))
-
-# --------------------------------------------------
-# PDF READER
-# --------------------------------------------------
-def read_pdfs(urls):
-    text = ""
-    for url in urls:
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=20, verify=False)
-            r.raise_for_status()
-            with pdfplumber.open(BytesIO(r.content)) as pdf:
-                for page in pdf.pages:
-                    t = page.extract_text()
-                    if t:
-                        text += t + "\n"
-        except Exception as e:
-            st.error(f"❌ Failed: {url}")
-    st.code(repr(e))
-    return text
-
-# --------------------------------------------------
-# INPUT
-# --------------------------------------------------
-mode = st.radio("Input Mode", ["PDF Links", "Manual Text"])
-
-cause_text = ""
-
-if mode == "PDF Links":
-    links = st.text_area("Paste PDF links (one per line)")
-    if st.button("Read PDFs"):
-        urls = [l.strip() for l in links.splitlines() if l.startswith("http")]
-        cause_text = read_pdfs(urls)
-        st.success("PDF processed")
-
-else:
-    cause_text = st.text_area("Paste cause list text", height=300)
-
-xls_file = st.file_uploader("Upload Excel", type=["xlsx", "xls"])
-
-# --------------------------------------------------
-# PROCESS
-# --------------------------------------------------
-if cause_text and xls_file:
-
-    main_cases = set(extract_cases(cause_text))
-    st.write(f"📊 Extracted Cases: {len(main_cases)}")
-
-    xls = pd.ExcelFile(xls_file)
-
-    results = []
-    skipped_rows = []
-    matched_cases = set()
-
-    for sheet in xls.sheet_names:
-        df = pd.read_excel(xls, sheet_name=sheet)
-        df.columns = [str(c).lower().strip() for c in df.columns]
-
-        case_col = next((c for c in df.columns if "case" in c), None)
-        year_col = next((c for c in df.columns if "year" in c), None)
-
-        if not case_col:
-            continue
-
-        # -------------------------
-        # CLEAN CASE NO (FIXED ONLY THIS PART)
-        # -------------------------
-        df[case_col] = pd.to_numeric(df[case_col], errors="coerce")
-        df[case_col] = df[case_col].astype("Int64")
-
-        df = df[df[case_col].notna()]
-
-        if df.empty:
-            continue
-
-        # -------------------------
-        # YEAR LOGIC
-        # -------------------------
-        detected_year = None
-        year_series = None
+    
+  
 
         if year_col:
             year_series = pd.to_numeric(df[year_col], errors="coerce")
@@ -126,9 +8,9 @@ if cause_text and xls_file:
                 detected_year = int(year_series.dropna().iloc[0])
 
         if not detected_year:
-            m = re.search(r"(19|20)\d{2}", str(sheet))
-            if m:
-                detected_year = int(m.group())
+            year_match = re.search(r"(19|20)\d{2}", str(sheet))
+            if year_match:
+                detected_year = int(year_match.group())
 
         if year_series is not None:
             df["__year"] = year_series
@@ -140,48 +22,46 @@ if cause_text and xls_file:
 
         df["__year"] = pd.to_numeric(df["__year"], errors="coerce")
 
-        # -------------------------
-        # ROW VALIDATION
-        # -------------------------
+        # --------------------------------------------------
+        # BUILD FULL CASE AND VALIDATE ROWS
+        # --------------------------------------------------
         valid_indices = []
         full_cases = []
 
-        for idx, row in df.iterrows():
+        for row_index, row in df.iterrows():
+            case_value = row[case_col]
+            year_value = row["__year"]
 
-            case_val = row[case_col]
-            year_val = row["__year"]
-
-            if pd.isna(year_val):
-                year_val = detected_year
+            if pd.isna(year_value):
+                year_value = detected_year
 
             try:
-                case_num = int(case_val)
+                case_number = int(case_value)
 
-                if pd.isna(year_val):
-                    raise ValueError
+                if pd.isna(year_value):
+                    raise ValueError("Missing year")
 
-                year_num = int(year_val)
+                year_number = int(year_value)
+                full_case = f"{sheet_case_type}/{case_number}/{year_number}"
 
-                full_case = f"WP/{case_num}/{year_num}"
-
-                valid_indices.append(idx)
+                valid_indices.append(row_index)
                 full_cases.append(full_case)
 
-            except:
+            except Exception:
                 skipped_rows.append({
                     "Sheet": sheet,
-                    "Row_Index": idx,
-                    "Case_No": case_val,
-                    "Year": year_val,
-                    "Reason": "Invalid case or year"
+                    "Excel_Row": int(row_index) + 2,
+                    "Case_No": case_value,
+                    "Year": year_value,
+                    "Reason": "Invalid case number or missing/invalid year",
                 })
 
-        df = df.loc[valid_indices]
+        df = df.loc[valid_indices].copy()
         df["__fullcase"] = full_cases
 
-        # -------------------------
+        # --------------------------------------------------
         # MATCHING
-        # -------------------------
+        # --------------------------------------------------
         hit = df[df["__fullcase"].isin(main_cases)].copy()
 
         if not hit.empty:
@@ -189,63 +69,62 @@ if cause_text and xls_file:
             matched_cases.update(hit["__fullcase"])
             results.append(hit)
 
-    # -------------------------
+    # --------------------------------------------------
     # FINAL RESULT
-    # -------------------------
+    # --------------------------------------------------
     if results:
         final = pd.concat(results, ignore_index=True)
         final.drop(columns=["__fullcase", "__year"], inplace=True, errors="ignore")
-
         st.success(f"✅ Matched Rows: {len(final)}")
         st.dataframe(final)
-
     else:
         st.warning("No matches found")
         final = pd.DataFrame()
 
-    # -------------------------
+    # --------------------------------------------------
     # UNMATCHED
-    # -------------------------
+    # --------------------------------------------------
     unmatched = main_cases - matched_cases
     st.write(f"❌ Unmatched Cases: {len(unmatched)}")
-    st.write(list(unmatched)[:20])
+    st.write(sorted(unmatched)[:20])
 
-    # -------------------------
+    # --------------------------------------------------
     # SKIPPED ROWS
-    # -------------------------
+    # --------------------------------------------------
     if skipped_rows:
         st.warning(f"⚠️ Skipped Rows: {len(skipped_rows)}")
         skipped_df = pd.DataFrame(skipped_rows)
         st.dataframe(skipped_df)
+    else:
+        skipped_df = pd.DataFrame()
 
-    # -------------------------
+    # --------------------------------------------------
     # EXCEL DOWNLOAD
-    # -------------------------
+    # --------------------------------------------------
     output = BytesIO()
 
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-
         if not final.empty:
             final.to_excel(writer, index=False, sheet_name="Matched")
         else:
             pd.DataFrame({"Message": ["No matched cases"]}).to_excel(
-                writer, sheet_name="Matched", index=False
+                writer, index=False, sheet_name="Matched"
             )
 
-        pd.DataFrame({"Unmatched": list(unmatched)}).to_excel(
-            writer, sheet_name="Unmatched", index=False
+        pd.DataFrame({"Unmatched": sorted(unmatched)}).to_excel(
+            writer, index=False, sheet_name="Unmatched"
         )
 
-        if skipped_rows:
-            pd.DataFrame(skipped_rows).to_excel(
-                writer, sheet_name="Skipped Rows", index=False
-            )
+        if not skipped_df.empty:
+            skipped_df.to_excel(writer, index=False, sheet_name="Skipped Rows")
 
     st.download_button(
         "📥 Download Excel",
         output.getvalue(),
-        "final_output.xlsx"
+        "final_output.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 else:
-    st.info("Provide input and Excel")
+    st.info("Provide cause-list input and upload Excel.")
+
