@@ -16,211 +16,291 @@ HEADERS = {"User-Agent": "APHC-Case-Matcher"}
 st.set_page_config(page_title="APHC Case Matcher", layout="wide")
 st.title("⚖️ APHC Case Matcher")
 
+
 # --------------------------------------------------
-# EXTRACT CASES
+# EXTRACT CASES FROM CAUSE LIST
+# Supports WP/123/2025, (WP/123/2025), WP(AT)/123/2025,
+# CC/123/2025 and CC(AT)/123/2025.
+# Skips the WP reference associated with "ARISING FROM".
 # --------------------------------------------------
 def extract_cases(text):
-    # Match special case types first so WP(AT) is not mistaken for WP.
-    case_pattern = re.compile(
-        r"\b(WP\s*\(\s*AT\s*\)|CC\s*\(\s*AT\s*\)|WP|CC)"
-        r"\s*/?\s*(\d+)\s*/\s*(\d{4})\b",
+    cases = set()
+    skip_next_reference = False
+
+    pattern = re.compile(
+        r"\b(WP|CC)\s*(?:\(\s*AT\s*\))?\s*/\s*(\d+)\s*/\s*(\d+)",
         re.IGNORECASE
     )
 
-    cases = set()
-    skip_related_case = False
-
     for line in text.splitlines():
-
-        # Ignore the case mentioned under "ARISING FROM".
         if "ARISING FROM" in line.upper():
-            skip_related_case = True
-            continue
+            skip_next_reference = True
 
-        matches = list(case_pattern.finditer(line))
-
-        if not matches:
-            continue
-
-        if skip_related_case:
-            # Ignore the first case number following "ARISING FROM".
-            skip_related_case = False
-            continue
+        matches = list(pattern.finditer(line))
 
         for match in matches:
-            case_type = re.sub(r"\s+", "", match.group(1).upper())
-            case_no = int(match.group(2))
-            year = int(match.group(3))
+            if skip_next_reference:
+                skip_next_reference = False
+                continue
 
-            cases.add(f"{case_type}/{case_no}/{year}")
+            case_type = match.group(1).upper()
+            case_number = int(match.group(2))
+            case_year = int(match.group(3))
+
+            cases.add(f"{case_type}/{case_number}/{case_year}")
 
     return sorted(cases)
+
 
 # --------------------------------------------------
 # PDF READER
 # --------------------------------------------------
 def read_pdfs(urls):
     text = ""
+
     for url in urls:
         try:
-            r = requests.get(url, headers=HEADERS, timeout=20, verify=False)
-            r.raise_for_status()
-            with pdfplumber.open(BytesIO(r.content)) as pdf:
+            response = requests.get(
+                url,
+                headers=HEADERS,
+                timeout=30,
+                verify=False
+            )
+            response.raise_for_status()
+
+            with pdfplumber.open(BytesIO(response.content)) as pdf:
                 for page in pdf.pages:
-                    t = page.extract_text()
-                    if t:
-                        text += t + "\n"
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+
         except Exception as e:
-            st.warning(f"⚠️ Failed: {url}")
+            st.error(f"Failed to read PDF: {url}")
             st.code(repr(e))
 
     return text
+
 
 # --------------------------------------------------
 # INPUT
 # --------------------------------------------------
 mode = st.radio("Input Mode", ["PDF Links", "Manual Text"])
 
-cause_text = ""
+if "cause_text" not in st.session_state:
+    st.session_state.cause_text = ""
 
 if mode == "PDF Links":
     links = st.text_area("Paste PDF links (one per line)")
+
     if st.button("Read PDFs"):
-        urls = [l.strip() for l in links.splitlines() if l.startswith("http")]
-        cause_text = read_pdfs(urls)
+        urls = [
+            line.strip()
+            for line in links.splitlines()
+            if line.strip().startswith("http")
+        ]
 
-        if cause_text.strip():
-            st.success("PDF processed")
-            st.session_state["cause_text"] = cause_text
+        if not urls:
+            st.warning("Please enter at least one valid PDF link.")
         else:
-            st.error("No text could be extracted from the PDF links.")
+            st.session_state.cause_text = read_pdfs(urls)
 
-    cause_text = st.session_state.get("cause_text", "")
+            if st.session_state.cause_text.strip():
+                st.success("PDF text extracted.")
+            else:
+                st.error("No text was extracted. Check the PDF link or try Manual Text.")
 
 else:
-    cause_text = st.text_area("Paste cause list text", height=300)
+    st.session_state.cause_text = st.text_area(
+        "Paste cause list text",
+        value=st.session_state.cause_text,
+        height=300
+    )
 
 xls_file = st.file_uploader("Upload Excel", type=["xlsx", "xls"])
+
+
+# --------------------------------------------------
+# HELPERS
+# --------------------------------------------------
+def get_sheet_case_type(sheet_name):
+    """
+    Determine the case type from the sheet name.
+    Examples:
+      WP(AT) 2021 -> WP(AT)
+      CC(AT) 2021 -> CC(AT)
+      WP 2021     -> WP
+      2021 new    -> WP (default)
+    """
+    name = str(sheet_name).upper().replace(" ", "")
+
+    if "CC(AT)" in name:
+        return "CC(AT)"
+    if "WP(AT)" in name:
+        return "WP(AT)"
+    if "CC" in name:
+        return "CC"
+
+    return "WP"
+
+
+def get_case_number(value):
+    """Accept numeric Excel values such as 203 or 203.0."""
+    if pd.isna(value):
+        return None
+
+    try:
+        number = float(value)
+        if number.is_integer():
+            return int(number)
+    except (TypeError, ValueError):
+        pass
+
+    return None
+
 
 # --------------------------------------------------
 # PROCESS
 # --------------------------------------------------
-if cause_text and xls_file:
+cause_text = st.session_state.cause_text
+
+if cause_text.strip() and xls_file:
 
     main_cases = set(extract_cases(cause_text))
     st.write(f"📊 Extracted Cases: {len(main_cases)}")
 
-    xls = pd.ExcelFile(xls_file)
+    try:
+        xls = pd.ExcelFile(xls_file)
+    except Exception as e:
+        st.error("Could not open the Excel file.")
+        st.code(repr(e))
+        st.stop()
 
     results = []
     skipped_rows = []
     matched_cases = set()
 
     for sheet in xls.sheet_names:
-        df = pd.read_excel(xls, sheet_name=sheet)
-        df.columns = [str(c).lower().strip() for c in df.columns]
-
-        case_col = next((c for c in df.columns if "case" in c), None)
-        year_col = next((c for c in df.columns if "year" in c), None)
-
-        if not case_col:
+        try:
+            df = pd.read_excel(xls, sheet_name=sheet)
+        except Exception as e:
+            skipped_rows.append({
+                "Sheet": sheet,
+                "Row_Index": "",
+                "Case_No": "",
+                "Year": "",
+                "Reason": f"Could not read sheet: {e}"
+            })
             continue
 
-        # -------------------------
-        # DETECT CASE TYPE FROM SHEET NAME
-        # -------------------------
-        normalized_sheet = re.sub(r"\s+", "", str(sheet)).upper()
+        df.columns = [str(column).lower().strip() for column in df.columns]
 
-        if "WP(AT)" in normalized_sheet:
-            sheet_case_type = "WP(AT)"
-        elif "CC(AT)" in normalized_sheet:
-            sheet_case_type = "CC(AT)"
-        elif normalized_sheet.startswith("CC"):
-            sheet_case_type = "CC"
-        else:
-            # Preserve existing behavior for ordinary year-wise sheets.
-            sheet_case_type = "WP"
+        case_col = next(
+            (column for column in df.columns if "case" in column),
+            None
+        )
+        year_col = next(
+            (column for column in df.columns if "year" in column),
+            None
+        )
 
-        # -------------------------
-        # CLEAN CASE NO
-        # -------------------------
-        df[case_col] = pd.to_numeric(df[case_col], errors="coerce")
+        if not case_col:
+            skipped_rows.append({
+                "Sheet": sheet,
+                "Row_Index": "",
+                "Case_No": "",
+                "Year": "",
+                "Reason": "No Case No. column found"
+            })
+            continue
+
+        case_type = get_sheet_case_type(sheet)
+
+        # --------------------------------------------------
+        # CLEAN NUMERIC CASE NUMBERS
+        # --------------------------------------------------
+        raw_case_values = df[case_col].copy()
+        df[case_col] = raw_case_values.apply(get_case_number)
+
+        invalid_case_mask = (
+            raw_case_values.notna() &
+            df[case_col].isna()
+        )
+
+        for idx in df.index[invalid_case_mask]:
+            skipped_rows.append({
+                "Sheet": sheet,
+                "Row_Index": idx,
+                "Case_No": raw_case_values.loc[idx],
+                "Year": df.loc[idx, year_col] if year_col else None,
+                "Reason": "Case No. is not numeric"
+            })
+
+        df = df[df[case_col].notna()].copy()
         df[case_col] = df[case_col].astype("Int64")
-
-        df = df[df[case_col].notna()]
 
         if df.empty:
             continue
 
-        # -------------------------
+        # --------------------------------------------------
         # YEAR LOGIC
-        # -------------------------
+        # --------------------------------------------------
         detected_year = None
-        year_series = None
 
         if year_col:
             year_series = pd.to_numeric(df[year_col], errors="coerce")
+
             if year_series.notna().any():
                 detected_year = int(year_series.dropna().iloc[0])
-
-        if not detected_year:
-            m = re.search(r"(19|20)\d{2}", str(sheet))
-            if m:
-                detected_year = int(m.group())
-
-        if year_series is not None:
-            df["__year"] = year_series
         else:
-            df["__year"] = None
+            year_series = pd.Series(index=df.index, dtype="float64")
 
-        if detected_year:
+        if detected_year is None:
+            year_match = re.search(r"(19|20)\d{2}", str(sheet))
+            if year_match:
+                detected_year = int(year_match.group())
+
+        df["__year"] = year_series
+
+        if detected_year is not None:
             df["__year"] = df["__year"].fillna(detected_year)
 
-        df["__year"] = pd.to_numeric(df["__year"], errors="coerce")
-
-        # -------------------------
-        # ROW VALIDATION
-        # -------------------------
+        # --------------------------------------------------
+        # BUILD FULL CASE NUMBERS
+        # --------------------------------------------------
         valid_indices = []
         full_cases = []
 
         for idx, row in df.iterrows():
-
-            case_val = row[case_col]
-            year_val = row["__year"]
-
-            if pd.isna(year_val):
-                year_val = detected_year
+            case_value = row[case_col]
+            year_value = row["__year"]
 
             try:
-                case_num = int(case_val)
+                if pd.isna(year_value):
+                    raise ValueError("Missing case year")
 
-                if pd.isna(year_val):
-                    raise ValueError
+                case_number = int(case_value)
+                case_year = int(year_value)
 
-                year_num = int(year_val)
-
-                # Use the case type detected from the sheet name.
-                full_case = f"{sheet_case_type}/{case_num}/{year_num}"
+                full_case = f"{case_type}/{case_number}/{case_year}"
 
                 valid_indices.append(idx)
                 full_cases.append(full_case)
 
-            except Exception:
+            except (ValueError, TypeError, OverflowError):
                 skipped_rows.append({
                     "Sheet": sheet,
                     "Row_Index": idx,
-                    "Case_No": case_val,
-                    "Year": year_val,
-                    "Reason": "Invalid case or year"
+                    "Case_No": case_value,
+                    "Year": year_value,
+                    "Reason": "Invalid or missing case year"
                 })
 
-        df = df.loc[valid_indices]
+        df = df.loc[valid_indices].copy()
         df["__fullcase"] = full_cases
 
-        # -------------------------
-        # MATCHING
-        # -------------------------
+        # --------------------------------------------------
+        # MATCH
+        # --------------------------------------------------
         hit = df[df["__fullcase"].isin(main_cases)].copy()
 
         if not hit.empty:
@@ -228,38 +308,46 @@ if cause_text and xls_file:
             matched_cases.update(hit["__fullcase"])
             results.append(hit)
 
-    # -------------------------
-    # FINAL RESULT
-    # -------------------------
+    # --------------------------------------------------
+    # DISPLAY MATCHED RESULTS
+    # --------------------------------------------------
     if results:
         final = pd.concat(results, ignore_index=True)
-        final.drop(columns=["__fullcase", "__year"], inplace=True, errors="ignore")
+        final.drop(
+            columns=["__fullcase", "__year"],
+            inplace=True,
+            errors="ignore"
+        )
 
         st.success(f"✅ Matched Rows: {len(final)}")
-        st.dataframe(final)
+        st.dataframe(final, use_container_width=True)
 
     else:
-        st.warning("No matches found")
+        st.warning("No matches found.")
         final = pd.DataFrame()
 
-    # -------------------------
-    # UNMATCHED
-    # -------------------------
+    # --------------------------------------------------
+    # UNMATCHED CASES
+    # --------------------------------------------------
     unmatched = main_cases - matched_cases
+
     st.write(f"❌ Unmatched Cases: {len(unmatched)}")
-    st.write(list(unmatched)[:20])
 
-    # -------------------------
+    if unmatched:
+        st.write(sorted(unmatched)[:50])
+
+    # --------------------------------------------------
     # SKIPPED ROWS
-    # -------------------------
-    if skipped_rows:
-        st.warning(f"⚠️ Skipped Rows: {len(skipped_rows)}")
-        skipped_df = pd.DataFrame(skipped_rows)
-        st.dataframe(skipped_df)
+    # --------------------------------------------------
+    skipped_df = pd.DataFrame(skipped_rows)
 
-    # -------------------------
+    if not skipped_df.empty:
+        st.warning(f"⚠️ Skipped Rows: {len(skipped_df)}")
+        st.dataframe(skipped_df, use_container_width=True)
+
+    # --------------------------------------------------
     # EXCEL DOWNLOAD
-    # -------------------------
+    # --------------------------------------------------
     output = BytesIO()
 
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
@@ -267,24 +355,27 @@ if cause_text and xls_file:
         if not final.empty:
             final.to_excel(writer, index=False, sheet_name="Matched")
         else:
-            pd.DataFrame({"Message": ["No matched cases"]}).to_excel(
-                writer, sheet_name="Matched", index=False
-            )
+            pd.DataFrame(
+                {"Message": ["No matched cases"]}
+            ).to_excel(writer, index=False, sheet_name="Matched")
 
-        pd.DataFrame({"Unmatched": list(unmatched)}).to_excel(
-            writer, index=False, sheet_name="Unmatched"
-        )
+        pd.DataFrame(
+            {"Unmatched": sorted(unmatched)}
+        ).to_excel(writer, index=False, sheet_name="Unmatched")
 
-        if skipped_rows:
-            pd.DataFrame(skipped_rows).to_excel(
-                writer, index=False, sheet_name="Skipped Rows"
+        if not skipped_df.empty:
+            skipped_df.to_excel(
+                writer,
+                index=False,
+                sheet_name="Skipped Rows"
             )
 
     st.download_button(
         "📥 Download Excel",
-        output.getvalue(),
-        "final_output.xlsx"
+        data=output.getvalue(),
+        file_name="final_output.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
 else:
-    st.info("Provide input and Excel")
+    st.info("Provide cause list input and upload an Excel file.")
